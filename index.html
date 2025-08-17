@@ -1,48 +1,131 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<title>Web2 - メッセージ表示</title>
-<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database.js"></script>
-<link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.2/dist/tailwind.min.css" rel="stylesheet">
-<style>
-  body { background-color: #f3f4f6; font-family: 'Segoe UI', sans-serif; }
-  #display { 
-    background-color: white; 
-    border-radius: 1rem; 
-    padding: 2rem; 
-    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-    font-size: 2rem;
-    text-align: center;
-    max-width: 80%;
-  }
-</style>
-<script>
-const firebaseConfig = {
-  databaseURL: "https://hack-script-e899a-default-rtdb.firebaseio.com/"
-};
-firebase.initializeApp(firebaseConfig);
-const database = firebase.database();
-const display = document.getElementById('display');
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Display — Web2</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* わかりやすいフェード・スケールアニメ */
+    .appear {
+      animation: appearAnim 400ms ease both;
+    }
+    @keyframes appearAnim {
+      from { transform: translateY(6px) scale(0.98); opacity: 0; }
+      to   { transform: translateY(0)    scale(1);    opacity: 1; }
+    }
+  </style>
+</head>
+<body class="h-screen flex items-center justify-center bg-gradient-to-br from-sky-400 to-blue-300 text-black">
+  <div class="w-full max-w-2xl p-8 bg-white/70 backdrop-blur-md rounded-3xl shadow-2xl flex items-center justify-center">
+    <div id="centerCard" class="w-full flex flex-col items-center justify-center">
+      <div id="display" class="bg-white rounded-2xl p-10 shadow-lg text-center max-w-xl">
+        <p class="text-sm text-gray-500 mb-2">最新の押下</p>
+        <div id="big" class="text-4xl font-extrabold text-gray-800">—</div>
+        <div id="meta" class="mt-3 text-sm text-gray-400"></div>
+      </div>
+    </div>
+  </div>
 
-function showMessage(message, key) {
-  display.innerText = message;
-  setTimeout(() => {
-    database.ref('messages/' + key).remove();
-    display.innerText = '';
-  }, 60000);
+<script>
+const FIREBASE_URL = "https://hack-script-e899a-default-rtdb.firebaseio.com";
+const POLL_INTERVAL = 1000; // ms
+let lastKey = null;
+let deleteTimers = {}; // キーごとのタイマー参照
+
+async function poll() {
+  try {
+    const res = await fetch(`${FIREBASE_URL}/buttons.json`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    if (!data) return;
+
+    // entries: [ [key, value], ... ]
+    const entries = Object.entries(data);
+    // sort by ts
+    entries.sort((a,b) => (a[1].ts || 0) - (b[1].ts || 0));
+
+    // pick last (most recent)
+    const [key, val] = entries[entries.length - 1] || [null, null];
+    if (!key) return;
+
+    if (key !== lastKey) {
+      // 新しい表示
+      lastKey = key;
+      show(val, key);
+    }
+
+    // 登録されている未スケジュールのものをスケジュール削除
+    entries.forEach(([k, v]) => {
+      if (deleteTimers[k]) return; // 既にスケジュール済み
+      scheduleDeletion(k, v);
+    });
+
+  } catch (e) {
+    console.error("poll err:", e);
+  }
 }
 
-// 新しいメッセージが追加されたら表示
-database.ref('messages').orderByChild('timestamp').limitToLast(1)
-.on('child_added', snapshot => {
-  const msg = snapshot.val();
-  showMessage(msg.content, snapshot.key);
-});
+function show(payload, key) {
+  const big = document.getElementById('big');
+  const meta = document.getElementById('meta');
+  const display = document.getElementById('display');
+
+  big.textContent = `ボタン${payload.button}`;
+  meta.textContent = `${new Date(payload.ts).toLocaleString()} (id: ${key})`;
+
+  // アニメ
+  display.classList.remove('appear');
+  // force reflow to restart animation
+  void display.offsetWidth;
+  display.classList.add('appear');
+}
+
+// 指定キーを（payload.ts から60秒で）削除するようスケジュールする
+function scheduleDeletion(key, payload) {
+  const now = Date.now();
+  const created = payload.ts || now;
+  const deleteAfter = 60000; // 60s
+  const elapsed = now - created;
+  const remaining = deleteAfter - elapsed;
+
+  if (remaining <= 0) {
+    // 既に期限切れ -> 即削除
+    doDelete(key);
+    return;
+  }
+
+  // setTimeout で削除（Web2 が動いている間のみ有効）
+  const t = setTimeout(() => {
+    doDelete(key);
+    delete deleteTimers[key];
+  }, remaining);
+
+  deleteTimers[key] = t;
+}
+
+// 実際の削除（DELETE）
+async function doDelete(key) {
+  try {
+    const res = await fetch(`${FIREBASE_URL}/buttons/${key}.json`, {
+      method: "DELETE"
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    console.log("deleted", key);
+    // もし表示中のキーを消したなら表示クリア
+    if (lastKey === key) {
+      document.getElementById('big').textContent = "—";
+      document.getElementById('meta').textContent = "";
+      lastKey = null;
+    }
+  } catch (e) {
+    console.error("delete failed", e);
+  }
+}
+
+// polling 起動
+poll();
+setInterval(poll, POLL_INTERVAL);
 </script>
-</head>
-<body class="flex items-center justify-center h-screen">
-  <div id="display"></div>
 </body>
 </html>
